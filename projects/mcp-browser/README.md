@@ -1,8 +1,8 @@
 # mcp-browser
 
-A production-grade [FastMCP](https://github.com/jlowin/fastmcp) server that exposes **Playwright browser automation** as MCP tools — letting Claude (or any MCP client) drive a real browser tab-by-tab without ever touching the user's active session.
+A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes **Playwright browser automation** as MCP tools — letting Claude (or any MCP client) drive a real browser tab-by-tab without ever touching the user's active session.
 
-Built and used daily as part of an autonomous agentic fleet that fills forms, navigates sites, applies to jobs, and manages profiles — all via Claude tool calls.
+A personal project built to explore how LLM agents drive a real browser — navigating sites, filling forms, and batching multi-step flows into single tool calls.
 
 ---
 

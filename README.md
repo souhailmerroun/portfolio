@@ -8,7 +8,7 @@ Senior Full-Stack Engineer — React / TypeScript / AI & Agentic Systems
 
 **Agentic browser automation via MCP (Model Context Protocol)**
 
-A FastMCP server powering 30+ Playwright browser tools for autonomous AI agents. Persistent CDP daemon eliminates per-call latency. Used daily in production agentic pipelines.
+A FastMCP server exposing 30+ Playwright browser tools to autonomous AI agents, with a persistent CDP daemon that eliminates per-call latency. A personal project exploring agent–browser interfaces.
 
 - **Stack**: Python, Node.js, Playwright, FastMCP, Chrome DevTools Protocol
 - **Highlights**: auto-discovery tool registry, tab-safety invariant, `pw_act` batch executor for multi-step flows in one LLM round-trip
