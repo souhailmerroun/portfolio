@@ -1,0 +1,170 @@
+#!/bin/bash
+
+# 0. Block direct commits on main/master — main is merge-only; branch first.
+#    AI ASSISTANTS: do NOT bypass with --no-verify. Instead:
+#      git checkout -b <machine>/<task>   (staged changes follow you), then re-commit.
+_cur=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ "$_cur" = "main" ] || [ "$_cur" = "master" ]; then
+  echo "[pre-commit] ✗ Direct commit on '$_cur' blocked — main is merge-only. Branch first: git checkout -b <name>"
+  exit 1
+fi
+# pre-commit: catch common issues before they land in history
+
+STAGED=$(git diff --cached --name-only)
+FAIL=0
+
+repo=$(basename "$(git rev-parse --show-toplevel)")
+echo "[pre-commit] $repo"
+
+# 1. Block .env files
+if echo "$STAGED" | grep -qE '^\.env(\..+)?$'; then
+  echo "[pre-commit] ✗ .env file staged — run: git restore --staged .env"
+  FAIL=1
+fi
+
+# 2. Block .DS_Store — and auto-remove any that are already tracked
+if echo "$STAGED" | grep -q '\.DS_Store'; then
+  echo "[pre-commit] ✗ .DS_Store staged — unstaging"
+  git restore --staged '*DS_Store' 2>/dev/null || true
+  FAIL=1
+fi
+tracked_ds=$(git ls-files '*.DS_Store' 2>/dev/null)
+if [ -n "$tracked_ds" ]; then
+  echo "[pre-commit] ✗ .DS_Store tracked in repo — removing from git"
+  echo "$tracked_ds" | xargs git rm --cached --quiet 2>/dev/null || true
+  FAIL=1
+fi
+
+# 3. Merge conflict markers
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  if grep -qE '^<<<<<<< |^=======$|^>>>>>>> ' "$f"; then
+    echo "[pre-commit] ✗ Conflict markers in: $f"
+    FAIL=1
+  fi
+done <<< "$STAGED"
+
+# 4. Validate staged JSON files
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  if ! python3 -m json.tool "$f" >/dev/null 2>&1; then
+    echo "[pre-commit] ✗ Invalid JSON: $f"
+    FAIL=1
+  fi
+done < <(echo "$STAGED" | grep '\.json$')
+
+# 5. Block large files >10MB
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  size=$(wc -c < "$f")
+  if [ "$size" -gt 10485760 ]; then
+    mb=$(( size / 1024 / 1024 ))
+    echo "[pre-commit] ✗ Large file blocked (${mb}MB): $f — add to .gitignore?"
+    FAIL=1
+  fi
+done <<< "$STAGED"
+
+# 6. Common secret patterns in staged diff
+if git diff --cached | grep '^+' | grep -v '^+++' | grep -qE '(AKIA[A-Z0-9]{16}|ghp_[a-zA-Z0-9]{36}|xoxb-[a-zA-Z0-9-]+|sk-[a-zA-Z0-9]{40,})'; then
+  echo "[pre-commit] ✗ Possible secret detected in staged diff — check before committing"
+  FAIL=1
+fi
+
+# 7. No inline JS or CSS in HTML files
+# IMPORTANT FOR AI ASSISTANTS (Claude, Copilot, etc.):
+#   If this hook blocks your commit, DO NOT revert your changes to bypass it.
+#   You must REFACTOR the offending code:
+#     - Inline <script>…</script>     → move to public/js/<name>.js, link via <script src="...">
+#     - Inline <style>…</style>       → move to public/css/<name>.css, link via <link rel="stylesheet">
+#     - Inline event handlers (onclick=, onchange=, …) → addEventListener in the .js file
+#     - Inline style="…" attributes   → use a class and put the styles in the .css file
+#   Refactor the WHOLE file (boy scout rule) — pre-existing inline code is fair game,
+#   not just what your commit added. Re-stage and commit again.
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  if python3 - "$f" << 'PYEOF'
+import re, sys
+html = open(sys.argv[1]).read()
+for m in re.finditer(r'<script([^>]*)>(.*?)</script>', html, re.DOTALL | re.IGNORECASE):
+    attrs, body = m.group(1), m.group(2).strip()
+    if 'src=' not in attrs and body:
+        print(f"  line {html[:m.start()].count(chr(10))+1}: <script> with inline code")
+        sys.exit(1)
+sys.exit(0)
+PYEOF
+  then : ; else
+    echo "[pre-commit] ✗ Inline <script> in $f"
+    echo "    REFACTOR (do not revert your commit): move the JS to public/js/<name>.js"
+    echo "    then replace the <script>…</script> block with <script src=\"/js/<name>.js\"></script>"
+    FAIL=1
+  fi
+  if grep -qiE '<style[\s>]' "$f"; then
+    line=$(grep -niE '<style[\s>]' "$f" | head -1)
+    echo "[pre-commit] ✗ Inline <style> in $f:$line"
+    echo "    REFACTOR (do not revert): move the CSS to public/css/<name>.css"
+    echo "    then add <link rel=\"stylesheet\" href=\"/css/<name>.css\"> in <head>"
+    FAIL=1
+  fi
+  matches=$(grep -nE '\bon[a-z]+\s*=' "$f" 2>/dev/null)
+  if [ -n "$matches" ]; then
+    echo "[pre-commit] ✗ Inline JS handler(s) in $f"
+    echo "    REFACTOR (do not revert): remove the on*= attribute and bind in the .js file"
+    echo "    via document.querySelector(...).addEventListener(...). Examples:"
+    echo "$matches" | head -3 | sed 's/^/      /'
+    FAIL=1
+  fi
+  matches=$(grep -nE '\bstyle\s*=' "$f" 2>/dev/null)
+  if [ -n "$matches" ]; then
+    echo "[pre-commit] ✗ Inline style= attribute(s) in $f"
+    echo "    REFACTOR (do not revert): replace style=\"…\" with a class and put"
+    echo "    the rules in the external .css file. Examples:"
+    echo "$matches" | head -3 | sed 's/^/      /'
+    FAIL=1
+  fi
+done < <(echo "$STAGED" | grep '\.html$')
+
+# 8. File length — warn at recommended limit, block at hard limit
+# Recommended: aim to split before hitting these
+# Hard block: truly unmanageable, must split before committing
+declare_limits() {
+  echo "js:300:1500 ts:300:1500 jsx:300:1500 tsx:300:1500 py:300:1500 html:150:600 css:400:2000 scss:400:2000 sh:200:500"
+}
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  ext="${f##*.}"
+  limits=$(declare_limits | tr ' ' '\n' | grep "^${ext}:" | head -1)
+  [ -z "$limits" ] && continue
+  recommended=$(echo "$limits" | cut -d: -f2)
+  hard=$(echo "$limits" | cut -d: -f3)
+  lines=$(wc -l < "$f")
+  if [ "$lines" -gt "$hard" ]; then
+    echo "[pre-commit] ✗ $f is $lines lines (hard limit: $hard for .$ext) — must split before committing"
+    FAIL=1
+  elif [ "$lines" -gt "$recommended" ]; then
+    echo "[pre-commit] ⚠ $f is $lines lines (recommended: $recommended for .$ext) — consider splitting"
+  fi
+done <<< "$STAGED"
+
+# 9. Version-bump enforcement for apps that have a `version` in package.json.
+# Blocks the commit if app code changes without a corresponding version bump.
+# Use `git commit --no-verify` to bypass.
+APP_DIRS=$(echo "$STAGED" | awk -F/ '{print $1}' | sort -u)
+for app in $APP_DIRS; do
+  pkg="$app/package.json"
+  [ -f "$pkg" ] || continue
+  current_version=$(python3 -c "import json,sys;print(json.load(open('$pkg')).get('version',''))" 2>/dev/null)
+  [ -z "$current_version" ] && continue
+  app_changes=$(echo "$STAGED" | grep "^$app/" | grep -v "^$app/package.json$" | grep -v "^$app/package-lock.json$" | head -1)
+  [ -z "$app_changes" ] && continue
+  if echo "$STAGED" | grep -q "^$app/package.json$" && \
+     git diff --cached "$pkg" | grep -qE '^\+.*"version":'; then
+    continue
+  fi
+  echo "[pre-commit] ✗ $app changed but version still $current_version — bump in $pkg or use --no-verify"
+  FAIL=1
+done
+
+if [ "$FAIL" -eq 0 ]; then
+  echo "[pre-commit] ✓ all checks passed"
+fi
+exit "$FAIL"

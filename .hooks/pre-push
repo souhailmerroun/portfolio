@@ -1,0 +1,15 @@
+#!/bin/bash
+# pre-push: block force-push to any branch — history is sacred
+
+set -u
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_sha" = "0000000000000000000000000000000000000000" ] && continue
+  if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+    branch="${remote_ref#refs/heads/}"
+    repo=$(basename "$(git rev-parse --show-toplevel)")
+    echo "[pre-push] ✗ $repo → $branch: force push blocked — would erase history"
+    exit 1
+  fi
+done
+exit 0
