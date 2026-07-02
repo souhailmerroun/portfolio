@@ -17,7 +17,8 @@ This sets `core.hooksPath = .hooks` so the hooks in this folder run on commit/pu
 ## Hooks shipped
 
 ### `pre-commit`
-Code quality — blocks:
+Code quality + safety — blocks:
+0. **Direct commits on `main`/`master`** — main is merge-only; branch first
 1. `.env` files
 2. `.DS_Store` — blocks staging and auto-removes any already tracked
 3. Merge conflict markers
@@ -29,4 +30,20 @@ Code quality — blocks:
 9. Missing version bump in `package.json` when app code changes
 
 ### `pre-push`
-Safety — blocks force-push to any branch to prevent history erasure.
+Safety — blocks:
+- **Direct pushes to `main`/`master`** — main is updated only via GitHub merge
+- Force-push to any branch (prevents history erasure)
+
+## Workflow
+
+`main` is protected: you cannot commit or push to it directly. All work flows
+through short-lived feature branches merged on GitHub.
+
+```sh
+git checkout -b a/<task>     # branch off main (prefix per machine: a/… , b/…)
+# ...work, commit...
+git ship                     # push branch → open PR → squash-merge → back on updated main
+```
+
+`git ship` is a global alias (see `git config --global --get alias.ship`); run
+the same `git config` command on each machine to install it.
